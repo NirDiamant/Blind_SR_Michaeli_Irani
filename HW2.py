@@ -2,12 +2,9 @@ import scipy.io
 import numpy as np
 import scipy.misc
 from matplotlib import pyplot as plt
-import PIL
 from PIL import Image
 from scipy import fftpack, signal
-from scipy.sparse import csgraph
 from scipy.linalg import circulant
-import time
 import sklearn
 from sklearn.decomposition import PCA
 import sklearn.neighbors
@@ -26,7 +23,6 @@ def downsample_shrink_matrix(mat, alpha):
     return downsampled
 
 def downsample_shrink_matrix_1d(mat, alpha):
-    # print(mat.shape)
     (mat_shape_x, mat_shape_y) = mat.shape
     new_size =(int(mat_shape_x / alpha), int(mat_shape_y))
     downsampled = np.zeros(new_size)
@@ -43,18 +39,16 @@ def downsample_zeros_matrix(mat, alpha):
             mat[:, i] = 0
     return mat
 
-
+## upsample matrix by factor alpha, using cubic interpolation
 def upsample_matrix(mat,alpha):
     (mat_shape_x, mat_shape_y) = mat.shape
     new_size = (int(mat_shape_y * alpha), int(mat_shape_x * alpha))
-    #FILTER = PIL.Image.BILINEAR
     upsampled_filtered_image = cv2.resize(mat, dsize=new_size, interpolation=cv2.INTER_CUBIC)
-    #upsampled_filtered_image = mat.resize(new_size, resample=FILTER)
     return upsampled_filtered_image
 
 
 ## creates a gaussian matrix
-def gaussian(window_size,range, mu, sigma):
+def gaussian(window_size, range, mu, sigma):
     z = np.linspace(-range, range, window_size)
     x, y = np.meshgrid(z, z)
     d = np.sqrt(x*x+y*y)
@@ -62,20 +56,20 @@ def gaussian(window_size,range, mu, sigma):
     g = g / g.sum()
     return g
 
+
 ## creates a sinc matrix
-def sinc(window_size,range):
+def sinc(window_size, range):
     x = np.linspace(-range, range, window_size)
-    xx = np.outer(x,x)
+    xx = np.outer(x, x)
     s = np.sinc(xx)
     s = s / s.sum()
     return s
 
-## creates a laplacian vector
+## creates a laplacian operator matrix
 def laplacian(mat_length): #the matrix in a square, and the parameter is the length of the side of the square
     a = -1
     b = 4
-    #lap = np.array([[0, a, 0], [a, b, a], [0, a, 0]])
-    lap_mat = np.zeros((mat_length**2, mat_length**2))
+    lap_mat = np.zeros((mat_length ** 2, mat_length ** 2))
 
     main_diag_pattern = np.zeros((mat_length, mat_length))
     for i in range(mat_length):
@@ -103,7 +97,6 @@ def laplacian(mat_length): #the matrix in a square, and the parameter is the len
 
     start_index_x = 0
     end_index_x = mat_length
-
     start_index_y = mat_length
     end_index_y = 2 * mat_length
 
@@ -119,10 +112,10 @@ def laplacian(mat_length): #the matrix in a square, and the parameter is the len
     return lap_mat
 
 
-
 ## calculates the distnace as the nominator of the iterative function in the paper
 def dist_weight(q_i,r_j_alpha, sigma):
     return np.exp(-0.5 * (np.linalg.norm(q_i - r_j_alpha) ** 2)/(sigma ** 2))
+
 
 ## divides image into patches with given step size, and saves the result in an array
 def create_patches_from_image(img, patch_size, step_size):
@@ -134,14 +127,8 @@ def create_patches_from_image(img, patch_size, step_size):
     return array_for_patches
 
 
-def wiener_filter2(image, psf, k):
-    image_dft = fftpack.fft2(image)
-    psf_dft = fftpack.fft2(fftpack.ifftshift(psf), shape=image_dft.shape)
-    filter_dft = np.conj(psf_dft) / (np.abs(psf_dft) ** 2 + k)
-    recovered_dft = image_dft * filter_dft
-    return np.real(fftpack.ifft2(recovered_dft))
-
-def wiener_filter(img,kernel,K):
+## restors image with wiener filter, given the blurred image, the psf and wiener filter constant
+def wiener_filter(img, kernel, K):
     if np.sum(kernel):
         kernel /= np.sum(kernel)
     dummy = np.copy(img)
@@ -152,6 +139,17 @@ def wiener_filter(img,kernel,K):
     dummy = np.abs(fftpack.ifft2(dummy))
     return dummy
 
+
+## image processing course teaching assistant's wiener filter implementation
+def wiener_filter2(image, psf, k):
+    image_dft = fftpack.fft2(image)
+    psf_dft = fftpack.fft2(fftpack.ifftshift(psf), shape=image_dft.shape)
+    filter_dft = np.conj(psf_dft) / (np.abs(psf_dft) ** 2 + k)
+    recovered_dft = image_dft * filter_dft
+    return np.real(fftpack.ifft2(recovered_dft))
+
+
+## saves img to folder with specific format
 def save_as_img(img,  title, my_format):
     img = img / img.max()
     img_256 = img * 255
@@ -160,14 +158,22 @@ def save_as_img(img,  title, my_format):
     im.save(title + my_format)
 
 
+## calculates PSNR of two matrices
+def calculate_psnr(im1, im2):
+    MSE = np.mean((im1 - im2) ** 2)
+    max_value = im1.max()
+    PSNR = 20 * np.log10(max_value / (np.sqrt(MSE)))
+    return PSNR
+
+
+## calculate restored kernel from blurred image in order to generate higher resolution image
 def calculate_kernel(blurred_img, alpha, T):
-    my_format = ".PNG"
     patch_size = 15
     q_patch_size = int(patch_size / alpha)
-    sigma_NN = 0.059
-    Wiener_Filter_Constant = 0.01
+    sigma_NN = 0.06  # last value that worked 0.059
     num_neighbors = 5
     pca_num_components = 25
+    epsilon = 1e-10  # a value to add to a matrix to make it invertible
     patch_step_size_factor = 1 / (patch_size / alpha)  # step size for the patch partition, in units of patches
     title_name = "patch_" + str(patch_size) + "_alpha_" + str(alpha) + "_step_" + str(patch_step_size_factor) + "_NN_" \
                  + str(num_neighbors) + "_PCA_" + str(pca_num_components) + "_sigmaNN_" + str(
@@ -181,37 +187,28 @@ def calculate_kernel(blurred_img, alpha, T):
     for q_patch in q_patches:
         curr_q_vec = q_patch.reshape(q_patch.size)
         q_patches_vec.append(curr_q_vec)
-
     q_patches_vec = np.array(q_patches_vec)
-    ## generating Rj by calculating: taking every big patch (r), making it a vector, then a circulant matrix, and then downsample by alpha**2 (only rows)
+
+    ## generating Rj by calculating: taking every big patch (r), making it a vector, then a circulant matrix,
+    # and then downsample by alpha**2 (only rows)
     Rj = []
     for r_patch in r_patches:
         r_vec = r_patch.reshape(r_patch.size)
         r_circulant = circulant(r_vec)
         curr_Rj = downsample_shrink_matrix_1d(r_circulant, alpha ** 2)
         Rj.append(curr_Rj)
-    print(f'size of Rj : {Rj[0].shape}')
+
 
     ## initial k to start iterative algorithm with
     delta = fftpack.fftshift(scipy.signal.unit_impulse((patch_size, patch_size)))
     curr_k = delta.reshape(delta.size)
 
-    curr_k_image = curr_k.reshape((patch_size, patch_size))
-    plt.imshow(curr_k_image, cmap='gray')
-    plt.title("initial k " + title_name)
-    plt.show()
-
     C = laplacian(patch_size)
-    # C = np.expand_dims(C, axis=0)
     C_squared = C.T @ C
-    print(f'shape of C: {C.shape}')
-    epsilon = 1e-10  # a value to add to a matrix to make it invertible
 
-    pad_size = int((patch_size - q_patch_size) / 2)
+
     for t in range(T):
-        print(f't is: {t}')
-        # curr_k = np.pad(curr_k,(pad_size + 1, pad_size))
-        # print(f'curr_k shape: {curr_k.shape}')
+        print(f'iteration number: {t}')
 
         r_alpha_patches = []
         for j, patch in enumerate(r_patches):
@@ -228,7 +225,6 @@ def calculate_kernel(blurred_img, alpha, T):
                 neighbors_weights[i, index] = dist_weight(q_patch_vec, r_alpha_patches[index], sigma_NN)
 
         neighbors_weights_sum = np.sum(neighbors_weights, axis=1)
-        # epsilon_mat = np.ones((curr_k.shape[0],curr_k.shape[0])) * epsilon
         epsilon_mat = np.eye(curr_k.shape[0]) * epsilon
 
         for row in range(neighbors_weights.shape[0]):
@@ -256,102 +252,90 @@ def calculate_kernel(blurred_img, alpha, T):
 
 def main():
 
-    #lap = laplacian(4)
-
-
-    ## define constants
-    init_time = time.time()
     img = plt.imread("DIPSourceHW2.png")
     img = np.array(img)
     img = img[:, :, 0]
     img = img / img.max()
+    img_new_size = np.zeros((img.shape[0]+2, img.shape[1]+2))
+    img_new_size[1:-1, 1:-1] = img
+    img = img_new_size
 
-    # dummy_shape = 15
-    # dummy = np.zeros((dummy_shape,dummy_shape))
-    # dummy[3:7,:] = 255
-    # dummy = (dummy / dummy.max()).astype(int)
-    #
-    # plt.imshow(dummy,cmap='gray')
-    # plt.title("dummy")
-    # plt.show()
-    #
-    # img_vec = dummy.reshape(dummy.size)
-    # img_vec_t = img_vec.T
-    # img_lap = laplacian(dummy.shape[0])
-    #
-    # res = img_lap @ img_vec_t
-    # res_img = res.reshape((dummy_shape,dummy_shape))
-    #
-    # plt.imshow(res_img, cmap='gray')
-    # plt.title("laplacian matmul img vec")
-    # plt.show()
-
-    #laplacian()
+    ## define constants
     alpha = 3
     window_size = 15
-    filter_range = window_size/4 #was window_size/2. smaller range ==> wider gaussian,
+    filter_range_sinc = window_size/4  #was window_size/2. smaller range ==> wider gaussian,
+    filter_range_gaussian = window_size / 16
     mu = 0
     sigma = 1
     T = 5
 
-
     ## generate filters
-    g = gaussian(window_size, filter_range, mu, sigma)
-    plt.imshow(g, cmap='gray')
-    plt.title("Real gaussian PSF")
-    plt.show()
+    s_filter = sinc(window_size, filter_range_sinc)
+    g_filter = gaussian(window_size, filter_range_gaussian, mu, sigma)
 
-    gaussian_img_big = signal.convolve2d(img, g, mode='same', boundary='wrap')
-    gaussian_img = downsample_shrink_matrix(gaussian_img_big, alpha)
-    gaussian_img_high_res = upsample_matrix(gaussian_img,alpha)
-
-    # plt.imshow(gaussian_img, cmap='gray')
-    # plt.title("gaussian img")
-    # plt.show()
-    #
-    # plt.imshow(gaussian_img_high_res, cmap='gray')
-    # plt.title("gaussian img high res initial")
-    # plt.show()
-
-    # gaussian_restored_true = wiener_filter(gaussian_img_big, g, 0.1)
-    # plt.imshow(gaussian_restored_true, cmap='gray')
-    # plt.title("restored gaussian with real gaussian kernel")
-    # plt.show()
-
-
-
-    s_filter = sinc(window_size,filter_range)
+    ## generate low resolution images
     sinc_img_big = signal.convolve2d(img, s_filter, mode='same', boundary='wrap')
     sinc_img = downsample_shrink_matrix(sinc_img_big, alpha)
     sinc_img_high_res = upsample_matrix(sinc_img, alpha)
-    sinc_restored_img_true = wiener_filter(sinc_img_high_res, s_filter, 0.1)
-    plt.imshow(sinc_img, cmap='gray')
-    plt.title("sinc img")
+
+    gaussian_img_big = signal.convolve2d(img, g_filter, mode='same', boundary='wrap')
+    gaussian_img = downsample_shrink_matrix(gaussian_img_big, alpha)
+    gaussian_img_high_res = upsample_matrix(gaussian_img, alpha)
+
+    plt.imshow(sinc_img_high_res, cmap='gray')
+    plt.title("sinc blurred img")
     plt.show()
 
-    plot_results(sinc_restored_img_true, s_filter, 0)
+    plt.imshow(gaussian_img_high_res, cmap='gray')
+    plt.title("gaussian blurred img")
+    plt.show()
 
-    # gaussian_restored_k = calculate_kernel(gaussian_img, alpha,T)
-    sinc_restored_k = calculate_kernel(sinc_img, alpha, T)
+    ## restore kernels using Irani-Michaeli's paper's algorithm
+    gaussian_restored_k = calculate_kernel(gaussian_img, alpha,T) ## restored kernel after blurring with gaussian
+    sinc_restored_k = calculate_kernel(sinc_img, alpha, T) ## restored kernel after blurring with sinc
 
-
-    #gaussian_restored_img = wiener_filter(gaussian_img_high_res, gaussian_restored_k, 0.1)
+    ## restore each blurred image with both kernels
     sinc_restored_img = wiener_filter(sinc_img_high_res, sinc_restored_k, 0.1)
+    sinc_blurred_restored_from_gaussian_img = wiener_filter(sinc_img_high_res, gaussian_restored_k, 0.1)
+    gaussian_restored_img= wiener_filter(gaussian_img_high_res, gaussian_restored_k, 0.1)
+    gaussian_blurred_restored_from_sinc_img = wiener_filter(gaussian_img_high_res, sinc_restored_k, 0.1)
 
-    plot_results(sinc_restored_img, sinc_restored_k, T)
+    ## plot results and PSNR with original high-res image
+    plot_results(sinc_restored_img, "sinc-ker", "sinc-ker", img)
+    plot_results(sinc_blurred_restored_from_gaussian_img, "sinc-ker", "gauss-ker", img)
+    plot_results(gaussian_restored_img, "gauss-ker", "gauss-ker", img)
+    plot_results(gaussian_blurred_restored_from_sinc_img, "gauss-ker", "sinc-ker", img)
 
-def plot_results(img_restored, kernel_restored, num_iterations):
+
+def plot_results(img_restored, blurred_with, restored_with, orig_img):
     plt.imshow(img_restored, cmap='gray')
-    plt.title(f'restoration after iteration number: {num_iterations}, with wiener factor: 0.1')
-    plt.show()
-    plt.imshow(kernel_restored, cmap='gray')
-    plt.title(f'curr_k as an image after iteration numbter {num_iterations} ')
+    PSNR = calculate_psnr(orig_img[5:-5, 5:-5], img_restored[5:-5, 5:-5])
+    plt.title(f'image blurred with {blurred_with} and restored with {restored_with}. PSNR={PSNR:.2f}')
     plt.show()
 
 
+## sainity check of the laplacian matrix operator
+
+# dummy_shape = 15
+# dummy = np.zeros((dummy_shape,dummy_shape))
+# dummy[3:7,:] = 255
+# dummy = (dummy / dummy.max()).astype(int)
+#
+# plt.imshow(dummy,cmap='gray')
+# plt.title("dummy")
+# plt.show()
+#
+# img_vec = dummy.reshape(dummy.size)
+# img_vec_t = img_vec.T
+# img_lap = laplacian(dummy.shape[0])
+#
+# res = img_lap @ img_vec_t
+# res_img = res.reshape((dummy_shape,dummy_shape))
+#
+# plt.imshow(res_img, cmap='gray')
+# plt.title("laplacian matmul img vec")
+# plt.show()
 
 
-
-
-if __name__ =="__main__":
+if __name__ == "__main__":
     main()
